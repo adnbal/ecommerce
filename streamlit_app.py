@@ -8,7 +8,12 @@ st.title("🤖 Tony — Streamlit × GitHub AI Bot")
 st.caption("Ask Tony directly via OpenAI, or relay via GitHub `/ai` comments to your Action-powered bot.")
 
 # --- Secrets & setup ---
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
+# Expecting secrets in this format:
+# [openai]
+# api_key = "sk-..."
+OPENAI_API_KEY = st.secrets["openai"]["api_key"]
+
+# GitHub secrets (kept at root unless you want to nest them)
 GITHUB_PAT = st.secrets.get("GITHUB_PAT", None)
 GITHUB_OWNER = st.secrets.get("GITHUB_OWNER", None)
 GITHUB_REPO = st.secrets.get("GITHUB_REPO", None)
@@ -72,12 +77,10 @@ tabs = st.tabs(["Direct (OpenAI)", "GitHub Relay (/ai)"])
 
 with tabs[0]:
     st.subheader("Direct chat via OpenAI")
-    if not OPENAI_API_KEY:
-        st.info("Add `OPENAI_API_KEY` to your Streamlit secrets to use this tab.")
     prompt = st.text_area("Your message to Tony", placeholder="Ask anything…", height=120, key="direct_prompt")
     if st.button("Ask Tony (Direct)"):
         if not OPENAI_API_KEY:
-            st.error("OPENAI_API_KEY is missing in secrets.")
+            st.error("No OpenAI API key found in secrets.")
         elif not prompt.strip():
             st.warning("Please enter a prompt.")
         else:
