@@ -44,7 +44,7 @@ def post_github_comment(owner: str, repo: str, issue_number: int, body: str):
     )
     if r.status_code >= 300:
         raise RuntimeError(f"GitHub API error {r.status_code}: {r.text}")
-    return r.json()  # includes id, html_url, etc.
+    return r.json()
 
 def list_issue_comments(owner: str, repo: str, issue_number: int, per_page: int = 30):
     url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
@@ -62,7 +62,6 @@ def list_issue_comments(owner: str, repo: str, issue_number: int, per_page: int 
     return r.json()
 
 def find_latest_bot_reply(comments, since_comment_id: int | None = None):
-    # The Action posts as github-actions[bot]. If you changed that, update here.
     bot_logins = {"github-actions[bot]"}
     latest = None
     for c in comments:
@@ -75,28 +74,52 @@ def find_latest_bot_reply(comments, since_comment_id: int | None = None):
 
 tabs = st.tabs(["Direct (OpenAI)", "GitHub Relay (/ai)"])
 
+# ---------------- Direct (OpenAI) tab ----------------
 with tabs[0]:
     st.subheader("Direct chat via OpenAI")
     prompt = st.text_area("Your message to Tony", placeholder="Ask anything…", height=120, key="direct_prompt")
+
+    # Track cooldown
+    if "last_call_time" not in st.session_state:
+        st.session_state.last_call_time = 0
+    if "last_prompt" not in st.session_state:
+        st.session_state.last_prompt = None
+    if "last_answer" not in st.session_state:
+        st.session_state.last_answer = None
+
     if st.button("Ask Tony (Direct)"):
         if not OPENAI_API_KEY:
             st.error("No OpenAI API key found in secrets.")
         elif not prompt.strip():
             st.warning("Please enter a prompt.")
         else:
-            with st.spinner("Tony is thinking…"):
-                try:
-                    answer = call_openai(prompt.strip())
-                    st.markdown("**Tony:**")
-                    st.write(answer)
-                except Exception as e:
-                    st.error(f"OpenAI error: {e}")
+            now = time.time()
+            if now - st.session_state.last_call_time < 15:  # 15 second cooldown
+                st.warning("⏳ Please wait a few seconds before asking again.")
+            else:
+                st.session_state.last_call_time = now
+                with st.spinner("Tony is thinking…"):
+                    try:
+                        # Only call if new prompt
+                        if st.session_state.last_prompt != prompt.strip():
+                            answer = call_openai(prompt.strip())
+                            st.session_state.last_prompt = prompt.strip()
+                            st.session_state.last_answer = answer
+                        else:
+                            answer = st.session_state.last_answer
+                        st.markdown("**Tony:**")
+                        st.write(answer)
+                    except Exception as e:
+                        st.error(f"OpenAI error: {e}")
 
+# ---------------- GitHub Relay tab ----------------
 with tabs[1]:
     st.subheader("Relay via GitHub `/ai` comment")
     if not all([GITHUB_PAT, GITHUB_OWNER, GITHUB_REPO, GITHUB_ISSUE_NUMBER]):
         st.info("Add `GITHUB_PAT`, `GITHUB_OWNER`, `GITHUB_REPO`, and `GITHUB_ISSUE_NUMBER` to your secrets to use this tab.")
-    relay_prompt = st.text_area("Your message (will be posted as `/ai ...` to a GitHub issue)", placeholder="e.g., Summarize the linked discussion and propose next steps.", height=120, key="relay_prompt")
+    relay_prompt = st.text_area("Your message (will be posted as `/ai ...` to a GitHub issue)",
+                                placeholder="e.g., Summarize the linked discussion and propose next steps.",
+                                height=120, key="relay_prompt")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -116,7 +139,8 @@ with tabs[1]:
             st.warning("Please enter a prompt.")
         else:
             try:
-                posted = post_github_comment(GITHUB_OWNER, GITHUB_REPO, int(GITHUB_ISSUE_NUMBER), f"/ai {relay_prompt.strip()}")
+                posted = post_github_comment(GITHUB_OWNER, GITHUB_REPO, int(GITHUB_ISSUE_NUMBER),
+                                             f"/ai {relay_prompt.strip()}")
                 st.session_state.last_comment_id = posted.get("id")
                 st.session_state.last_discussion_url = posted.get("html_url")
                 st.success("Posted to GitHub. Your Action bot will reply in the same thread.")
