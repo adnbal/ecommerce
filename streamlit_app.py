@@ -8,29 +8,52 @@ st.title("🤖 Tony — Streamlit × GitHub AI Bot")
 st.caption("Ask Tony directly via OpenAI, or relay via GitHub `/ai` comments to your Action-powered bot.")
 
 # --- Secrets & setup ---
-# Expecting secrets in this format:
+# Expected format in Streamlit Cloud secrets:
 # [openai]
 # api_key = "sk-..."
 OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 
-# GitHub secrets (kept at root unless you want to nest them)
+# GitHub relay secrets (root level)
 GITHUB_PAT = st.secrets.get("GITHUB_PAT", None)
 GITHUB_OWNER = st.secrets.get("GITHUB_OWNER", None)
 GITHUB_REPO = st.secrets.get("GITHUB_REPO", None)
 GITHUB_ISSUE_NUMBER = st.secrets.get("GITHUB_ISSUE_NUMBER", None)
 
+# ---------------- OpenAI wrapper ----------------
 def call_openai(prompt: str) -> str:
     client = OpenAI(api_key=OPENAI_API_KEY)
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are Tony, a friendly robot personal assistant. Be concise, helpful, and speak in simple clear sentences."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.7,
-    )
-    return resp.choices[0].message.content.strip()
 
+    try:
+        # First try GPT-4o Mini
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are Tony, a friendly robot personal assistant. Be concise, helpful, and speak in simple clear sentences."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+        )
+        return resp.choices[0].message.content.strip()
+
+    except Exception as e:
+        # If quota/rate error, retry with GPT-3.5
+        if "insufficient_quota" in str(e) or "429" in str(e):
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are Tony, a friendly robot personal assistant. Be concise, helpful, and speak in simple clear sentences."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.7,
+                )
+                return "(Fallback to gpt-3.5-turbo) " + resp.choices[0].message.content.strip()
+            except Exception as e2:
+                return f"OpenAI quota error on both models: {e2}"
+        else:
+            return f"OpenAI error: {e}"
+
+# ---------------- GitHub helpers ----------------
 def post_github_comment(owner: str, repo: str, issue_number: int, body: str):
     url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
     r = requests.post(
@@ -72,14 +95,15 @@ def find_latest_bot_reply(comments, since_comment_id: int | None = None):
             latest = c
     return latest
 
+# ---------------- Tabs ----------------
 tabs = st.tabs(["Direct (OpenAI)", "GitHub Relay (/ai)"])
 
-# ---------------- Direct (OpenAI) tab ----------------
+# ----- Direct (OpenAI) tab -----
 with tabs[0]:
     st.subheader("Direct chat via OpenAI")
     prompt = st.text_area("Your message to Tony", placeholder="Ask anything…", height=120, key="direct_prompt")
 
-    # Track cooldown
+    # Track cooldown & cache
     if "last_call_time" not in st.session_state:
         st.session_state.last_call_time = 0
     if "last_prompt" not in st.session_state:
@@ -94,13 +118,12 @@ with tabs[0]:
             st.warning("Please enter a prompt.")
         else:
             now = time.time()
-            if now - st.session_state.last_call_time < 15:  # 15 second cooldown
+            if now - st.session_state.last_call_time < 15:  # 15s cooldown
                 st.warning("⏳ Please wait a few seconds before asking again.")
             else:
                 st.session_state.last_call_time = now
                 with st.spinner("Tony is thinking…"):
                     try:
-                        # Only call if new prompt
                         if st.session_state.last_prompt != prompt.strip():
                             answer = call_openai(prompt.strip())
                             st.session_state.last_prompt = prompt.strip()
@@ -112,7 +135,7 @@ with tabs[0]:
                     except Exception as e:
                         st.error(f"OpenAI error: {e}")
 
-# ---------------- GitHub Relay tab ----------------
+# ----- GitHub Relay tab -----
 with tabs[1]:
     st.subheader("Relay via GitHub `/ai` comment")
     if not all([GITHUB_PAT, GITHUB_OWNER, GITHUB_REPO, GITHUB_ISSUE_NUMBER]):
